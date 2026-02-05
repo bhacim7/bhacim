@@ -15,31 +15,38 @@ class RobotController:
     def calculate_pure_pursuit(self, robot_pose, path, current_speed_pwm=None):
         """
         [SENIOR UPDATE]
-        - Adaptive Lookahead: Virajlarda kısa bakış.
+        - Dynamic Lookahead: Hıza ve viraja göre değişen bakış mesafesi.
+        - Continuous Speed Profiling: Viraj keskinliğine göre oransal yavaşlama.
         - Target Smoothing: Hedef titremesini önleme.
         """
         if not path or len(path) < 2:
             return 1500, 1500, None
 
         rx, ry, ryaw = robot_pose
+        base_pwm = current_speed_pwm if current_speed_pwm else cfg.BASE_PWM
 
-        # --- 1. ADAPTIVE LOOKAHEAD (KIVRAK DÖNÜŞ) ---
-        # Standart bakış: 1.5m, Viraj varsa: 0.8m
-        current_lookahead = 1.5
-        
+        # --- 1. DYNAMIC LOOKAHEAD ---
+        # Hıza göre bakış mesafesi (PWM üzerinden tahmin: 1500=0.0 -> 1900=1.0)
+        throttle_ratio = (base_pwm - 1500) / 400.0
+        throttle_ratio = max(0.0, min(1.0, throttle_ratio))
+
+        # Hızlıyken uzağa (2.0m), Yavaşken yakına (1.0m) bak
+        current_lookahead = 1.0 + (throttle_ratio * 1.0)
+
         # Yolun ilerisine bakıp viraj var mı diye kontrol et
-        check_idx = min(len(path)-1, 5) 
+        check_idx = min(len(path)-1, 6)
         ref_p = path[check_idx]
         desired_angle = math.atan2(ref_p[1] - ry, ref_p[0] - rx)
-        
-        # Açı farkını hesapla (0-360 sorununu çözerek)
+
+        # Açı farkını hesapla
         angle_diff = desired_angle - ryaw
-        angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi # -PI, +PI normalize
+        angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
         angle_diff_deg = abs(math.degrees(angle_diff))
 
+        # Eğer keskin viraj varsa, hıza bakmaksızın yakına odaklan
         if angle_diff_deg > 20:
-            current_lookahead = 0.8 # VİRAJ VAR! Yakına bak.
-        
+            current_lookahead = 0.8
+
         # --- 2. HEDEF NOKTAYI BUL ---
         target_point = path[-1]
         for p in path:
@@ -48,38 +55,43 @@ class RobotController:
                 target_point = p
                 break
 
-        # --- 3. TARGET SMOOTHING (HEDEF YUMUŞATMA) ---
-        # Hedef nokta aniden zıplamasın (Lidar gürültüsü vs. için)
+        # --- 3. TARGET SMOOTHING ---
         if not hasattr(self, 'prev_target'):
             self.prev_target = None
-        
+
         if self.prev_target is not None:
             # Low-Pass Filter: %70 Eski, %30 Yeni
             sm_x = (self.prev_target[0] * 0.7) + (target_point[0] * 0.3)
             sm_y = (self.prev_target[1] * 0.7) + (target_point[1] * 0.3)
             target_point = (sm_x, sm_y)
-        
-        self.prev_target = target_point
-        # ---------------------------------------------
 
-        # 4. Açıyı Hesapla ve PWM Üret
+        self.prev_target = target_point
+
+        # 4. Açı Hatası Hesapla
         target_angle = math.atan2(target_point[1] - ry, target_point[0] - rx)
         alpha = target_angle - ryaw
         alpha = (alpha + math.pi) % (2 * math.pi) - math.pi
 
-        # PWM Hesaplama
-        base = current_speed_pwm if current_speed_pwm else cfg.BASE_PWM
-        kp = 250.0 
-        
-        # Hız kesme (Virajda yavaşla)
-        turn_slowdown = 0
-        if abs(math.degrees(alpha)) > 20:
-            turn_slowdown = 50
+        # --- 5. CONTINUOUS SPEED PROFILING ---
+        # Keskin dönüşlerde hızı oransal düşür (Bang-Bang yerine Smooth)
+        error_deg = abs(math.degrees(alpha))
 
+        # 0 derece hatada -> %100 Hız
+        # 90 derece hatada -> %30 Hız (0.7 kayıp)
+        slowdown_factor = 1.0 - min(0.6, (error_deg / 90.0))
+
+        # 1. Mevcut gaz miktarını (Thrust) bul: 1500 referansına göre fark
+        raw_thrust = base_pwm - 1500
+        # 2. Sadece gaz miktarını ölçekle (Yavaşlat)
+        scaled_thrust = int(raw_thrust * slowdown_factor)
+        # 3. Yeni PWM'i hesapla: 1500 + Yeni Gaz
+        final_base_pwm = 1500 + scaled_thrust
+
+        kp = 280.0
         correction = int(alpha * kp)
-        
-        left_pwm = int(base - turn_slowdown - correction)
-        right_pwm = int(base - turn_slowdown + correction)
+
+        left_pwm = int(final_base_pwm - correction)
+        right_pwm = int(final_base_pwm + correction)
 
         return left_pwm, right_pwm, target_point
 
@@ -160,7 +172,7 @@ class RobotController:
         else:
             # Sağa Dön (Sol İleri, Sağ Geri)
             return (1500 + turn_power), (1500 - turn_power)
-    
+
     def get_failsafe_command(self, lost_time_start):
         """
         A* yol bulamadığında devreye giren 'B Planı'.
@@ -169,19 +181,19 @@ class RobotController:
         import time # Garanti olsun diye buraya da ekledim
         if lost_time_start is None:
             return 1500, 1500
-            
+
         elapsed = time.time() - lost_time_start
 
         # FAZ 1: NEFES AL (0 - 2.0 Saniye)
         # Hemen panikleme. Belki lidar anlık hata yaptı, harita düzelir.
         if elapsed < 2.0:
-            return 1500, 1500 
+            return 1500, 1500
 
         # FAZ 2: MİNİK KAÇIŞ (MICRO ESCAPE) (2.0 - 5.0 Saniye)
         # 2 saniyedir yol yok. Sıkıştık. Olduğun yerde yavaşça dönerek kör noktayı aç.
         elif elapsed < 5.0:
             # Sola yavaş dönüş (Kendi ekseninde)
-            return 1400, 1600 
+            return 1400, 1600
 
         # FAZ 3: GERİ ÇEKİL (5.0+ Saniye)
         # Dönmek işe yaramadı, önümüz tamamen duvar. Geri git.
