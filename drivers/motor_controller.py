@@ -96,7 +96,7 @@ class MotorDriver:
                 
                 # Dinleyici thread'i başlat
                 self.running = True
-                self.thread = threading.Thread(target=self._listen_loop, daemon=True)
+                self.thread = threading.Thread(target=self._listener_loop, daemon=True)
                 self.thread.start()
                 
             else:
