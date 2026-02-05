@@ -184,4 +184,27 @@ class PathPlanner:
             wy = center_m[1] + ((ch - hy) * res)
             world_path.append((wx, wy))
 
+        # [YENİ] Path Smoothing (Yol Yumuşatma)
+        world_path = self._smooth_path(world_path)
+
         return world_path
+
+    def _smooth_path(self, path, iterations=1):
+        """
+        Zikzaklı grid yolunu yumuşatır.
+        """
+        if len(path) < 3: return path
+        smoothed = list(path)
+
+        for _ in range(iterations):
+            for i in range(1, len(smoothed) - 1):
+                prev_p = smoothed[i - 1]
+                next_p = smoothed[i + 1]
+                curr_p = smoothed[i]
+
+                # Ağırlıklı Ortalama: %50 Mevcut, %25 Önceki, %25 Sonraki
+                new_x = (prev_p[0] + next_p[0] + 2 * curr_p[0]) / 4.0
+                new_y = (prev_p[1] + next_p[1] + 2 * curr_p[1]) / 4.0
+                smoothed[i] = (new_x, new_y)
+
+        return smoothed

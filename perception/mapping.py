@@ -57,11 +57,17 @@ class CostmapManager:
         lidar_scan: [(quality, angle_deg, dist_mm), ...]
         """
         MAX_TILT = 7.0  # Derece (Hem Roll hem Pitch için limit)
-        
+
         # Eğer robot çok yalpalıyorsa haritayı dondur
         if abs(robot_roll) > MAX_TILT or abs(robot_pitch) > MAX_TILT:
             # print(f"[MAP] Eğim Yüksek! Roll:{robot_roll:.1f} Pitch:{robot_pitch:.1f} -> Harita Donduruldu.")
             return
+
+        # 0. MAP DECAY (Dinamik Ortam Yönetimi)
+        # Haritayı yavaşça "Bilinmiyor" (127) durumuna çek.
+        # Hareket eden nesnelerin arkasında bıraktığı "hayalet duvarları" temizler.
+        # %2 Decay: Eski veri zamanla silinir.
+        self.costmap = cv2.addWeighted(self.costmap, 0.98, np.full_like(self.costmap, 127), 0.02, 0)
 
         rx, ry, ryaw = robot_pose
         p_robot = self.world_to_pixel(rx, ry)
@@ -132,7 +138,7 @@ class CostmapManager:
         self.nav_map = nav_grid
         return nav_grid
 
-    
+
 
     def add_virtual_obstacle(self, world_x, world_y, radius_m=0.6):
         """
@@ -142,15 +148,15 @@ class CostmapManager:
         """
         # 1. Koordinatı piksele çevir (Senin yardımcı fonksiyonunu kullanıyoruz)
         px_coords = self.world_to_pixel(world_x, world_y)
-        
+
         if px_coords:
             # 2. Yarıçapı piksele çevir (0.6m ideal güvenlik payıdır)
             radius_px = int(radius_m / self.resolution)
-            
+
             # 3. Haritayı Siyaha Boya (0 = Engel)
             # -1 parametresi dairenin içini doldur demektir.
             cv2.circle(self.costmap, px_coords, radius_px, 0, -1)
-            
+
             # [OPSİYONEL] Eğer o an nav_map oluşmuşsa onu da boya ki anlık tepki verelim
             if self.nav_map is not None:
                 cv2.circle(self.nav_map, px_coords, radius_px, 0, -1)  
