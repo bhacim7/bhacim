@@ -10,8 +10,8 @@ class Task5Docking:
     GÖREV 5: Automated Docking (Otomatik Park)
 
     1. Marina girişine yaklaş.
-    2. Lidar ile sağ/sol boşlukları tara.
-    3. Boş olan tarafa kör manevra (Timer ile) yap.
+    2. Lidar ve Kamera ile boşluk ara.
+    3. En düşük numaralı (Soldaki) yeşil şamandıraya park et.
     4. Geri çık ve görevi bitir.
     """
 
@@ -33,12 +33,14 @@ class Task5Docking:
         self.dock_side = "RIGHT"  # Varsayılan: Sağ taraf
         self.dock_timer = 0  # Manevra zamanlayıcısı
         self.entry_point = None  # Çıkışta geri dönülecek nokta
+        self.target_dock = None # Görsel hedef
 
     def enter(self):
         print("[TASK 5] Başlatıldı: Docking")
         self.current_state = self.STATE_APPROACH
         self.finished = False
         self.dock_timer = 0
+        self.target_dock = None
 
     def execute(self, sensors, robot_state):
         rx, ry, ryaw = robot_state.get_pose()
@@ -62,13 +64,44 @@ class Task5Docking:
             return 1500, 1500
 
         # -----------------------------------------------------------
-        # B) BOŞLUK TESPİTİ (LIDAR ANALİZİ)
+        # B) BOŞLUK TESPİTİ (KAMERA + LIDAR)
         # -----------------------------------------------------------
         elif self.current_state == self.STATE_SCAN:
-            # Lidar verisinden sağ/sol ortalamalarını çıkar
-            # Controller sınıfında bu analizi yapan bir metodumuz yoktu,
-            # o yüzden burada manuel yapıyoruz.
+            vision_objs = sensors.get('vision_objs', [])
 
+            # 1. VISUAL SEARCH (Görsel Arama)
+            greens = [o for o in vision_objs if o['label'] == 'GREEN' and o['dist'] < 8.0]
+
+            if greens:
+                # En soldaki (Lowest Number) şamandırayı seç
+                # Robota göre açısı en büyük (pozitif) olan en soldadır.
+                best_green = None
+                max_angle = -999.0
+
+                for g in greens:
+                    # Açı farkı
+                    angle_to_obj = math.atan2(g['y'] - ry, g['x'] - rx) - ryaw
+                    # Normalize (-pi, pi)
+                    angle_to_obj = (angle_to_obj + math.pi) % (2 * math.pi) - math.pi
+
+                    if angle_to_obj > max_angle:
+                        max_angle = angle_to_obj
+                        best_green = g
+
+                if best_green:
+                    print(f"[TASK 5] Yeşil Bulundu (Açı: {math.degrees(max_angle):.1f}) -> HEDEF SEÇİLDİ")
+                    self.target_dock = best_green
+                    self.current_state = self.STATE_DOCKING
+                    self.dock_timer = 0
+
+                    # Çıkış yönünü belirle
+                    if max_angle > 0: self.dock_side = "LEFT"
+                    else: self.dock_side = "RIGHT"
+
+                    return 1500, 1500
+
+            # 2. FALLBACK TO LIDAR (Eğer kamera bulamazsa)
+            # Lidar verisinden sağ/sol ortalamalarını çıkar
             right_dists = []
             left_dists = []
 
@@ -76,20 +109,16 @@ class Task5Docking:
                 dist_m = dist_mm / 1000.0
                 if dist_m > cfg.LIDAR_MAX_DIST or dist_m < 0.1: continue
 
-                # Açıyı normalize et
                 if angle > 180: angle -= 360
 
-                # Sağ Sektör (70 ile 110 derece arası)
                 if 70 < angle < 110:
                     right_dists.append(dist_m)
-                # Sol Sektör (-110 ile -70 derece arası)
                 elif -110 < angle < -70:
                     left_dists.append(dist_m)
 
             avg_right = np.mean(right_dists) if right_dists else 0.0
             avg_left = np.mean(left_dists) if left_dists else 0.0
 
-            # Karar Ver (Eşik: 2 metre üstü boşluktur)
             GAP_THRESH = 2.0
 
             if avg_right > GAP_THRESH:
@@ -105,46 +134,51 @@ class Task5Docking:
                 self.dock_timer = 0
 
             else:
-                # Boşluk bulamazsan yavaşça ilerle (Lidar Koridor)
-                # (Duvarlara sürtmeden ilerle ki boşluğu görebil)
-                # Burada controller'dan yardım alabiliriz
+                # Boşluk bulamazsan yavaşça ilerle
                 _, l_min, _, r_min = self.controller.analyze_lidar_sectors(lidar_scan)
                 left, right = self.controller.calculate_lidar_corridor_drive(l_min, r_min)
                 return left, right
 
         # -----------------------------------------------------------
-        # C) İÇERİ GİRİŞ MANEVRASI (TIMER İLE KÖR SÜRÜŞ)
+        # C) İÇERİ GİRİŞ MANEVRASI
         # -----------------------------------------------------------
         elif self.current_state == self.STATE_DOCKING:
             self.dock_timer += 1
 
-            # Yöne Göre PWM Ayarları
-            # Varsayılan RIGHT: Sola yavaş, Sağa hızlı (Sola dönmemesi için) -> Aslında "Sağa Dön" = Sol Motor İleri, Sağ Motor Geri/Yavaş
+            # GÖRSEL HEDEF VARSA ONA GİT
+            if self.target_dock:
+                 tx, ty = self.target_dock['x'], self.target_dock['y']
+                 dist = math.sqrt((tx - rx)**2 + (ty - ry)**2)
 
-            # Sağa Dönüş: Sol Motor > Sağ Motor
+                 # Çok yaklaştıysak veya süre dolduysa bitir
+                 if dist < 1.0 or self.dock_timer > 150: # 7.5 sn (20Hz)
+                     print("[TASK 5] Görsel Park Tamamlandı.")
+                     self.current_state = self.STATE_EXITING
+                     self.dock_timer = 0
+                     return 1500, 1500
+
+                 # Hedefe yönel (Pure Pursuit)
+                 path = [(tx, ty)]
+                 left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
+                 return left, right
+
+            # YOKSA KÖR MANEVRA YAP (Lidar Fallback)
             turn_pwm_sol = 1650
             turn_pwm_sag = 1350
 
-            if self.dock_side == "LEFT":  # Sola Dönüş: Sağ Motor > Sol Motor
+            if self.dock_side == "LEFT":
                 turn_pwm_sol = 1350
                 turn_pwm_sag = 1650
 
-            # Zaman Çizelgesi (Döngü sayısı, FPS'e bağlı, genelde 20Hz)
-            # 0 - 1.5 sn: Dön
             if self.dock_timer < 30:
-                # Dönüş Yap
                 return turn_pwm_sol, turn_pwm_sag
-
-            # 1.5 - 4.5 sn: Düz Gir
             elif self.dock_timer < 90:
                 print("[TASK 5] İçeri Giriliyor...")
                 return 1600, 1600
-
-            # Park Bitti -> Dur ve Çıkışa Geç
             else:
                 print("[TASK 5] Park Tamamlandı. Çıkışa geçiliyor.")
                 self.current_state = self.STATE_EXITING
-                self.dock_timer = 0  # Timer'ı sıfırla
+                self.dock_timer = 0
                 return 1500, 1500
 
         # -----------------------------------------------------------
@@ -159,12 +193,8 @@ class Task5Docking:
                 return 1400, 1400
 
             # 2.5 - 4.0 sn: Burnunu Çıkışa Çevir
-            # Geri çıktık, şimdi burnumuzu geldiğimiz yöne (Başlangıç noktasına) çevirmeliyiz.
-            # Sağ parka girdiysek -> Çıkış solumuzda kalır -> Sola dön
             elif self.dock_timer < 80:
                 print("[TASK 5] Çıkış Yönüne Dönülüyor...")
-
-                # Eğer SAĞ parka girdiysek, geri çıkınca çıkış SOLUMUZDA kalır -> Sola Dön
                 if self.dock_side == "RIGHT":
                     return 1350, 1650  # Sola Dön
                 else:
@@ -172,7 +202,6 @@ class Task5Docking:
 
             # Manevra Bitti -> Başlangıca Git
             else:
-                # Başlangıç noktasına yakın mıyız?
                 if self.entry_point:
                     dist = haversine(rlat, rlon, self.entry_point[0], self.entry_point[1])
                     if dist < 3.0:
@@ -180,7 +209,6 @@ class Task5Docking:
                         self.finished = True
                         return 1500, 1500
 
-                # Başlangıca gitmek için basit Lidar Koridor sürüşü yap (Geri geri değil, ileri)
                 lidar_info = self.controller.analyze_lidar_sectors(lidar_scan)
                 left, right = self.controller.calculate_lidar_corridor_drive(lidar_info[1], lidar_info[3])
                 return left, right

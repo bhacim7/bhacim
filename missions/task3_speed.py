@@ -147,11 +147,11 @@ class Task3Speed:
             # A) A* YOL BULDU -> Sorun yok, yola devam et.
                 self.path_lost_time = None  # Tehlike geçti, sayacı sıfırla.
                 left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
-            
+
             # NOT: Eğer Task 1 içindeysen ve 'Bitiş Kontrolü' kodların varsa
             # 'return left, right' yapmadan önce o kontrolleri burada yapabilirsin
             # veya return'ü en sona bırakabilirsin. Ama en temizi burdan dönmektir.
-            
+
             else:
                 # B) A* YOL BULAMADI -> Merkezi Kurtarma Modunu Çağır
                 import time
@@ -166,11 +166,11 @@ class Task3Speed:
             # ve return'ü aşağıda yapıyorsan, yukarıdaki if/else içinde return yapma,
             # değişkenleri (left, right) güncelle, akış aşağı devam etsin.
             # AMA genelde return edip çıkmak daha güvenlidir.
-            
+
             # Burada Bitiş Kontrolü (Exit Point) kodların varsa aynen kalsın:
             # dist_to_exit = ...
             # if dist_to_exit < 1.0: ...
-            
+
             return left, right
 
         # -----------------------------------------------------------
@@ -196,7 +196,8 @@ class Task3Speed:
                 # Standart Kartezyen (X ileri, Y Sol):
                 # CCW: (0, -R) [Sağ], (-R, 0) [Arka], (0, R) [Sol], (R, 0) [Ön]
             else:
-                offsets = [(0, R), (-R, 0), (0, -R), (R, 0)]  # CW
+                # CW: Left -> Front -> Right -> Behind
+                offsets = [(0, R), (R, 0), (0, -R), (-R, 0)]
 
             if self.circle_phase >= 4:
                 print("[TASK 3] Tur Bitti -> Kaçış")

@@ -1,5 +1,7 @@
 import math
 import cv2
+import json
+import time
 from config import cfg, wp
 from navigation.path_planner import PathPlanner
 from navigation.controller import RobotController
@@ -119,14 +121,13 @@ class Task2Avoidance:
             # A) A* YOL BULDU -> Sorun yok, yola devam et.
                 self.path_lost_time = None  # Tehlike geçti, sayacı sıfırla.
                 left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
-            
+
             # NOT: Eğer Task 1 içindeysen ve 'Bitiş Kontrolü' kodların varsa
             # 'return left, right' yapmadan önce o kontrolleri burada yapabilirsin
             # veya return'ü en sona bırakabilirsin. Ama en temizi burdan dönmektir.
-            
+
             else:
                 # B) A* YOL BULAMADI -> Merkezi Kurtarma Modunu Çağır
-                import time
                 if self.path_lost_time is None:
                     self.path_lost_time = time.time()
                     print(f"[{self.__class__.__name__}] YOL KAYIP! Failsafe Modu...")
@@ -138,11 +139,11 @@ class Task2Avoidance:
             # ve return'ü aşağıda yapıyorsan, yukarıdaki if/else içinde return yapma,
             # değişkenleri (left, right) güncelle, akış aşağı devam etsin.
             # AMA genelde return edip çıkmak daha güvenlidir.
-            
+
             # Burada Bitiş Kontrolü (Exit Point) kodların varsa aynen kalsın:
             # dist_to_exit = ...
             # if dist_to_exit < 1.0: ...
-            
+
             return left, right
 
         # C) YEŞİL ŞAMANDIRA ARA
@@ -176,8 +177,8 @@ class Task2Avoidance:
             bx, by = self.target_buoy['x'], self.target_buoy['y']
             R = 2.0  # Yarıçap (Metre)
 
-            # Kare Yörünge Noktaları (Sağdan Başla -> CCW)
-            offsets = [(0, -R), (R, 0), (0, R), (-R, 0)]  # Ön, Sağ, Arka, Sol
+            # Kare Yörünge Noktaları (CW: Left -> Front -> Right -> Behind)
+            offsets = [(0, R), (R, 0), (0, -R), (-R, 0)]
 
             if self.circle_phase >= 4:
                 print("[TASK 2] Tur Tamamlandı -> Eve Dönüş")
@@ -206,6 +207,7 @@ class Task2Avoidance:
         elif self.current_state == self.STATE_RETURN:
             if not self.path_history:
                 print("[TASK 2] Geri Dönüş Bitti. Görev Tamamlandı.")
+                self._generate_report()
                 self.finished = True
                 return 1500, 1500
 
@@ -235,7 +237,7 @@ class Task2Avoidance:
 
         for obj in vision_objs:
             # Sadece belirli renkleri kaydet
-            if obj['label'] not in ['RED', 'GREEN', 'YELLOW']: continue
+            if obj['label'] not in ['RED', 'GREEN', 'YELLOW', 'BLACK']: continue
 
             ox, oy = obj['x'], obj['y']
             found = False
@@ -259,6 +261,37 @@ class Task2Avoidance:
                     'y': oy,
                     'conf': 1
                 })
+
+    def _generate_report(self):
+        """Tespit edilen nesneleri raporlar."""
+        report = {
+            "task": "Task 2 Debris Clearance",
+            "timestamp": time.time(),
+            "hazards": [],
+            "survivors": []
+        }
+
+        for lm in self.landmarks:
+            if lm['conf'] < 3: continue # Gürültüyü ele
+
+            entry = {
+                "id": lm['id'],
+                "x": round(lm['x'], 2),
+                "y": round(lm['y'], 2),
+                "label": lm['label']
+            }
+
+            if lm['label'] in ['RED', 'BLACK']:
+                report["hazards"].append(entry)
+            elif lm['label'] == 'GREEN':
+                report["survivors"].append(entry)
+
+        try:
+            with open("task2_report.json", "w") as f:
+                json.dump(report, f, indent=4)
+            print("[TASK 2] Rapor kaydedildi: task2_report.json")
+        except Exception as e:
+            print(f"[TASK 2 HATA] Rapor kaydedilemedi: {e}")
 
     def is_finished(self):
         return self.finished
