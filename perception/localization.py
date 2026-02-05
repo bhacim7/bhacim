@@ -60,6 +60,7 @@ class LocalizationManager:
         self.y = 0.0
         self.yaw = 0.0  # Radyan
         self.heading = 0.0  # Derece (Kuzey=0, Saat Yönü)
+        self.yaw_offset = None # ZED ve Pusula arasındaki fark
 
         # Durum Değişkenleri (Global)
         self.lat = 0.0
@@ -97,6 +98,30 @@ class LocalizationManager:
             filtered = self.heading_filter.update(mav_heading)
             # Manyetik sapma düzeltmesi (+6 derece, orijinal koddan)
             self.heading = (filtered + 6) % 360
+
+            # [SENIOR UPDATE] SENSOR FUSION (ZED + COMPASS)
+            # ZED Yaw (Kısa vadeli stabil) ile Pusula (Uzun vadeli doğru) birleştirilir.
+            if zed_pose is not None:
+                compass_rad = math.radians(self.heading)
+
+                # İlk hizalama (Offset belirle)
+                if self.yaw_offset is None:
+                    self.yaw_offset = compass_rad - self.yaw
+
+                # ZED verisini Kuzey'e hizala
+                aligned_zed_yaw = self.yaw + self.yaw_offset
+
+                # Complementary Filter: %98 ZED, %2 Pusula
+                # Amaç: ZED'in driftini pusula ile yavaşça düzeltmek.
+                diff = compass_rad - aligned_zed_yaw
+                diff = (diff + math.pi) % (2 * math.pi) - math.pi # Normalize (-PI, PI)
+
+                # Offseti güncelle (Öğrenme Modu)
+                # Hatayı zamanla offset'e yedirerek kalıcı düzeltme sağla.
+                self.yaw_offset += 0.02 * diff
+
+                # Final Yaw (Fused)
+                self.yaw = self.yaw + self.yaw_offset
 
         # 3. GPS Güncelleme
         if gps_data and gps_data[0] is not None:
