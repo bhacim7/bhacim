@@ -128,15 +128,18 @@ class Task1Channel:
         if gate_mid_map:
             mx, my = gate_mid_map
             # Calculate bearing to gate midpoint in Map Frame
-            # Since ryaw is Compass Aligned (0=N, 90=E), Map Frame is North-East aligned
-            # atan2(dy, dx) gives angle from North (X-axis) towards East (Y-axis)
+            # Map Frame is ENU (East-North-Up). math.atan2(dy, dx) gives angle from East (CCW).
             angle_to_gate_rad = math.atan2(my - ry, mx - rx)
-            target_bearing = math.degrees(angle_to_gate_rad) % 360
+
+            # Convert ENU Angle to Compass Bearing (0=N, CW)
+            # Compass = (90 - ENU_Deg) % 360
+            target_bearing = (90 - math.degrees(angle_to_gate_rad)) % 360
             # print(f"[TASK 1] Gate Detected! Override Bearing: {target_bearing:.1f}")
 
         # 4. Heading Controller
         # Robot Heading (Compass)
-        current_heading = math.degrees(ryaw) % 360
+        # Convert Robot Yaw (ENU, 0=East, CCW) to Compass (0=North, CW)
+        current_heading = (90 - math.degrees(ryaw)) % 360
 
         left, right = self.controller.calculate_heading_nav(current_heading, target_bearing)
 
