@@ -238,7 +238,7 @@ class RobotController:
 
         else:
             # --- MOVE FORWARD ---
-            # Default to CRUISE speed if no specific speed is requested
+
             base_pwm = current_speed_pwm if current_speed_pwm else (cfg.BASE_PWM + cfg.CRUISE_PWM)
 
             # P-Controller for Heading

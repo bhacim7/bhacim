@@ -19,15 +19,6 @@ class Waypoints:
     TASK1_FINAL_LON: float = 29.2599123
 
     # --- TASK 2: Debris Clearance (Engel ve Işık Sahası) ---
-    # T2 Başlangıcı (Referans)
-    T2_ZONE_ENTRY_LAT: float = 40.80916
-    T2_ZONE_ENTRY_LON: float = 29.261915
-
-    # T2 Bitişi (Hedef)
-    T2_ZONE_END_LAT: float = 40.8089552
-    T2_ZONE_END_LON: float = 29.2619292
-
-    # New Task 2 Waypoints
     TASK2_START_LAT: float = 40.80916
     TASK2_START_LON: float = 29.261915
 

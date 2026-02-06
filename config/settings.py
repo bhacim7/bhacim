@@ -13,7 +13,7 @@ class RobotConfig:
     # --- GENEL OPERASYON ---
     # Yarışma modu: "GPS" (Açık Alan) veya "VISION" (Kapalı Alan)
     NAV_MODE: str = "GPS"
-    START_TASK: str = "TASK3_APPROACH"  # Başlangıç görevi
+    START_TASK: str = "TASK2_AVOIDANCE"  # Başlangıç görevi
 
     # --- İLETİŞİM VE PORTLAR ---
     # Çevresel değişkenlerden (Env Var) okur, yoksa varsayılanı kullanır
@@ -86,4 +86,5 @@ class RobotConfig:
 
 
 # Tek bir instance oluşturup dışarı açıyoruz
+
 cfg = RobotConfig()
