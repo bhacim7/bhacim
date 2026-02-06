@@ -1,6 +1,7 @@
 import math
 import numpy as np
 from config import cfg
+from utils.math_tools import signed_angle_difference
 import time
 
 class RobotController:
@@ -199,3 +200,54 @@ class RobotController:
         # Dönmek işe yaramadı, önümüz tamamen duvar. Geri git.
         else:
             return 1400, 1400 # Yavaşça geri git
+
+    def calculate_heading_nav(self, current_heading, target_bearing, current_speed_pwm=None):
+        """
+        Refactored Task 1 Controller:
+        - If angular error is large (>20 deg), rotate in place (Tank Turn).
+        - If angular error is small, move forward with P-correction.
+
+        Args:
+            current_heading (float): Current magnetic heading (0-360).
+            target_bearing (float): Target bearing (0-360).
+            current_speed_pwm (int): Base speed for forward movement.
+
+        Returns:
+            (left_pwm, right_pwm): Motor commands.
+        """
+        # 1. Calculate Error (-180 to +180)
+        error = signed_angle_difference(target_bearing, current_heading)
+
+        # 2. Threshold Check
+        ROTATION_THRESHOLD = 20.0
+
+        if abs(error) > ROTATION_THRESHOLD:
+            # --- ROTATE IN PLACE ---
+            # Direction: Positive error means Target is to Right -> Rotate Right
+            # Note: signed_angle_difference returns (Target - Current).
+            # If Target=90, Current=0 -> Error=+90. We need to turn Right (Clockwise).
+
+            turn_power = 200 # Adjust as needed
+
+            if error > 0:
+                # Turn Right (Left Fwd, Right Rev)
+                return (1500 + turn_power), (1500 - turn_power)
+            else:
+                # Turn Left (Left Rev, Right Fwd)
+                return (1500 - turn_power), (1500 + turn_power)
+
+        else:
+            # --- MOVE FORWARD ---
+            base_pwm = current_speed_pwm if current_speed_pwm else cfg.BASE_PWM
+
+            # P-Controller for Heading
+            # Kp_HEADING is defined in config (e.g., 2.5)
+            correction = error * cfg.Kp_HEADING
+
+            # Clamp correction to prevent motor saturation issues (optional but good practice)
+            correction = max(-100, min(100, correction))
+
+            left_pwm = int(base_pwm + correction)
+            right_pwm = int(base_pwm - correction)
+
+            return left_pwm, right_pwm
