@@ -9,13 +9,6 @@ class Waypoints:
     """
 
     # --- TASK 1: Evacuation Route (Kanal Geçişi) ---
-    T1_GATE_ENTER_LAT: float = 40.8630501
-    T1_GATE_ENTER_LON: float = 29.2599517
-
-    T1_GATE_EXIT_LAT: float = 40.8629223
-    T1_GATE_EXIT_LON: float = 29.2599123
-
-    # Refactored Task 1 Waypoints
     TASK1_START_LAT: float = 40.8630501
     TASK1_START_LON: float = 29.2599517
 
