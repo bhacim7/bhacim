@@ -238,6 +238,7 @@ class RobotController:
 
         else:
             # --- MOVE FORWARD ---
+
             base_pwm = current_speed_pwm if current_speed_pwm else (cfg.BASE_PWM + cfg.CRUISE_PWM)
 
             # P-Controller for Heading

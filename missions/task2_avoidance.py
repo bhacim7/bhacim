@@ -60,6 +60,10 @@ class Task2Avoidance:
         rx, ry, ryaw = robot_state.get_pose()
         rlat, rlon = robot_state.get_gps()
 
+        if rlat == 0.0 or rlon == 0.0:
+            print("[TASK 2] Waiting for GPS...")
+            return 1500, 1500
+
         nav_map = sensors.get('nav_map')
         map_info = sensors.get('map_info')
         vision_objs = sensors.get('vision_objs', [])
@@ -83,32 +87,12 @@ class Task2Avoidance:
 
             # Calculate Heading
             target_bearing = calculate_bearing(rlat, rlon, target_lat, target_lon)
-            current_heading = math.degrees(ryaw) # Assuming ryaw is in radians?
-            # Note: robot_state.get_pose() usually returns yaw in radians.
-            # But controller expects degrees for compass heading?
-            # Main.py: heading = motors.get_heading() -> passed to localizer.
-            # Localizer keeps yaw in radians?
-            # Let's check main.py again. localizer.update(..., heading, ...)
-            # RobotController.calculate_heading_nav takes current_heading (0-360).
-            # If ryaw is radians (math angle), we need to convert to bearing or use raw compass heading if available.
-            # But here we only have robot_state (localizer pose).
-            # Assuming ryaw is radians, standard math?
-            # Let's assume ryaw is consistent with bearing if converted.
-            # Actually, localizer usually converts everything to a consistent frame.
-            # Let's use `robot_state.yaw` converted to degrees if needed.
-            # But wait, `heading` from motors is Compass.
-            # Let's try to use the raw compass heading if possible? No, we only get `robot_state`.
-            # If `ryaw` is 0 at East (Math), and Bearing is 0 at North.
-            # Let's assume `ryaw` matches the controller expectation if we convert it properly.
-            # Controller `calculate_heading_nav` expects (0-360).
-            # Let's assume `ryaw` is in radians and convert to degrees.
-            # Better: recalculate bearing relative to robot frame?
 
-            # Simple fix: Use `calculate_heading_nav` with converted yaw.
-            # If ryaw is standard math (0=East, CCW):
-            # Heading (0=North, CW) = 90 - MathDeg
+            # Correction: Localization provides North-Referenced CCW yaw.
+            # Compass expects North-Referenced CW yaw.
+            # Conversion: (-degrees) % 360.
+            current_heading_deg = (-math.degrees(ryaw)) % 360
 
-            current_heading_deg = (90 - math.degrees(ryaw)) % 360
             left, right = self.controller.calculate_heading_nav(current_heading_deg, target_bearing)
             return left, right
 

@@ -64,6 +64,10 @@ class Task3Speed:
         rx, ry, ryaw = robot_state.get_pose()
         rlat, rlon = robot_state.get_gps()
 
+        if rlat == 0.0 or rlon == 0.0:
+            print("[TASK 3] Waiting for GPS...")
+            return 1500, 1500
+
         nav_map = sensors.get('nav_map')
         map_info = sensors.get('map_info')
         vision_objs = sensors.get('vision_objs', [])
@@ -85,8 +89,12 @@ class Task3Speed:
 
             # Navigate using Heading
             target_bearing = calculate_bearing(rlat, rlon, target_lat, target_lon)
-            # Convert robot yaw (radians, 0=East) to Compass Heading (0=North)
-            current_heading_deg = (90 - math.degrees(ryaw)) % 360
+
+            # Correction: Localization provides North-Referenced CCW yaw.
+            # Compass expects North-Referenced CW yaw.
+            # Conversion: (-degrees) % 360.
+            current_heading_deg = (-math.degrees(ryaw)) % 360
+
             left, right = self.controller.calculate_heading_nav(current_heading_deg, target_bearing)
             return left, right
 
