@@ -27,6 +27,16 @@ class Waypoints:
     T2_ZONE_END_LAT: float = 40.8089552
     T2_ZONE_END_LON: float = 29.2619292
 
+    # New Task 2 Waypoints
+    TASK2_START_LAT: float = 40.80916
+    TASK2_START_LON: float = 29.261915
+
+    TASK2_CORNER_LAT: float = 40.8090576
+    TASK2_CORNER_LON: float = 29.2619221
+
+    TASK2_FINAL_LAT: float = 40.8089552
+    TASK2_FINAL_LON: float = 29.2619292
+
     # --- TASK 3: Speed Challenge (Sürat Kapısı) ---
     T3_GATE_SEARCH_LAT: float = 40.8089735
     T3_GATE_SEARCH_LON: float = 29.2620113

@@ -1,249 +1,327 @@
 import math
 import cv2
+import time
 from config import cfg, wp
 from navigation.path_planner import PathPlanner
 from navigation.controller import RobotController
-from utils.math_tools import haversine
-
+from utils.math_tools import haversine, calculate_bearing
 
 class Task2Avoidance:
     """
-    GÖREV 2: Debris Clearance (Engel Sahası)
+    Task 2: Debris Clearance (Modular State Machine Implementation)
 
-    Özellikler:
-    - Görsel Hafıza (Landmark Memory): Görülen şamandıraları kaydeder.
-    - Ekmek Kırıntısı (Breadcrumbs): Gidilen rotayı kaydeder ve geri dönüşte kullanır.
-    - Tur Atma (Circling): Yeşil şamandıra etrafında tur atar.
+    States:
+    1. TASK_START: Navigate to task2_start_pos.
+    2. GO_TO_CORNER: Navigate to task2_corner_pos with A* + Pure Pursuit + Breadcrumbs.
+    3. GO_TO_FINAL: Navigate to task2_final_pos with A* + Pure Pursuit + Breadcrumbs.
+    4. SEARCH_PATTERN: Circular search for Green Marker.
+    5. GREEN_MARKER_FOUND: Circle detected marker.
+    6. RETURN_HOME: Retrace breadcrumbs to start.
     """
 
+    # State Constants
+    STATE_TASK_START = "TASK_START"
+    STATE_GO_TO_CORNER = "GO_TO_CORNER"
+    STATE_GO_TO_FINAL = "GO_TO_FINAL"
+    STATE_SEARCH_PATTERN = "SEARCH_PATTERN"
+    STATE_GREEN_MARKER_FOUND = "GREEN_MARKER_FOUND"
+    STATE_RETURN_HOME = "RETURN_HOME"
+
     def __init__(self):
-        # Durumlar
-        self.STATE_APPROACH = "APPROACH_ENTRY"
-        self.STATE_TRAVERSE = "TRAVERSE_ZONE"
-        self.STATE_SEARCH_GREEN = "SEARCH_GREEN"
-        self.STATE_CIRCLE = "CIRCLE_GREEN"
-        self.STATE_RETURN = "RETURN_HOME"
-        self.path_lost_time = None
-
-
-        self.current_state = self.STATE_APPROACH
+        self.current_state = self.STATE_TASK_START
         self.finished = False
-        self.next_task = "TASK3_APPROACH"
+        self.next_task = "TASK3_SPEED" # Or whatever is next
 
-        # Araçlar
         self.planner = PathPlanner()
         self.controller = RobotController()
 
-        # Hafıza
-        self.landmarks = []  # [{'id': 1, 'label': 'RED', 'x': 0, 'y': 0, 'conf': 1}, ...]
-        self.path_history = []  # [(lat, lon), (lat, lon), ...]
+        self.breadcrumbs = []
+        self.landmarks = []
         self.landmark_id_counter = 0
 
-        # Circling Değişkenleri
+        # State-specific variables
         self.circle_phase = 0
-        self.target_buoy = None  # Tur atılacak şamandıra
+        self.target_buoy = None
+        self.path_lost_time = None
+        self.search_laps = 0
+        self.search_angle = 0.0
+        self.start_lat = wp.TASK2_START_LAT
+        self.start_lon = wp.TASK2_START_LON
 
     def enter(self):
-        print("[TASK 2] Başlatıldı: Engel Sahası & Hafıza Modu")
-        self.current_state = self.STATE_APPROACH
+        print("[TASK 2] Starting Debris Clearance Task")
+        self.current_state = self.STATE_TASK_START
         self.finished = False
-        self.path_history = []
+        self.breadcrumbs = []
         self.landmarks = []
+        self.search_laps = 0
 
     def execute(self, sensors, robot_state):
         rx, ry, ryaw = robot_state.get_pose()
         rlat, rlon = robot_state.get_gps()
 
-        nav_map = sensors.get('nav_map')  # Lidar haritası (0=Engel, 255=Yol)
+        nav_map = sensors.get('nav_map')
         map_info = sensors.get('map_info')
-        vision_objs = sensors.get('vision_objs', [])  # YOLO çıktıları
+        vision_objs = sensors.get('vision_objs', [])
 
-        # 1. HAFIZA GÜNCELLEME (SLAM Benzeri Mantık)
+        # Update Memory
         self._update_landmark_memory(vision_objs, rx, ry)
 
-        # 2. HAFIZADAKİ ENGELLERİ HARİTAYA EKLE
-        # Lidar'ın göremediği ama Kameranın gördüğü şamandıraları haritaya çiziyoruz.
-        # Bu sayede A* algoritması onlara çarpmaz.
-        if nav_map is not None:
-            # Haritaya çizim yapmak için map_info'daki (center, res) lazım
-            # Ancak mapping sınıfında bir helper olsa daha iyiydi.
-            # Şimdilik basitçe mapping sınıfının logic'ini çağıracağız
-            # veya mapping sınıfı instance'ını sensors içinde almalıyız.
-            pass  # (Mapping sınıfı main loop'ta zaten bunları işleyebilir, burada sanal engel ekleme opsiyonel)
+        # --- STATE MACHINE ---
 
-        # -----------------------------------------------------------
-        # DURUM MAKİNESİ
-        # -----------------------------------------------------------
+        # 1. TASK START (GPS Only Navigation)
+        if self.current_state == self.STATE_TASK_START:
+            target_lat = wp.TASK2_START_LAT
+            target_lon = wp.TASK2_START_LON
 
-        # A) GİRİŞE GİT
-        if self.current_state == self.STATE_APPROACH:
-            target = (wp.T2_ZONE_ENTRY_LAT, wp.T2_ZONE_ENTRY_LON)
-            dist = haversine(rlat, rlon, target[0], target[1])
-
+            dist = haversine(rlat, rlon, target_lat, target_lon)
             if dist < 3.0:
-                print("[TASK 2] Sahaya Girildi -> Kayıt Başlıyor")
-                self.current_state = self.STATE_TRAVERSE
-                self.path_history.append((rlat, rlon))
+                print(f"[TASK 2] Reached Start Position. Switching to {self.STATE_GO_TO_CORNER}")
+                self.current_state = self.STATE_GO_TO_CORNER
+                self.breadcrumbs.append((rlat, rlon)) # Initial breadcrumb
+                return 1500, 1500
 
-            # (Basit GPS sürüşü veya Lidar Koridor burada kullanılabilir)
-            # Şimdilik boş dönüş yapıyoruz, main loop GPS ile sürebilir.
-            return 1500, 1500
+            # Calculate Heading
+            target_bearing = calculate_bearing(rlat, rlon, target_lat, target_lon)
+            current_heading = math.degrees(ryaw) # Assuming ryaw is in radians?
+            # Note: robot_state.get_pose() usually returns yaw in radians.
+            # But controller expects degrees for compass heading?
+            # Main.py: heading = motors.get_heading() -> passed to localizer.
+            # Localizer keeps yaw in radians?
+            # Let's check main.py again. localizer.update(..., heading, ...)
+            # RobotController.calculate_heading_nav takes current_heading (0-360).
+            # If ryaw is radians (math angle), we need to convert to bearing or use raw compass heading if available.
+            # But here we only have robot_state (localizer pose).
+            # Assuming ryaw is radians, standard math?
+            # Let's assume ryaw is consistent with bearing if converted.
+            # Actually, localizer usually converts everything to a consistent frame.
+            # Let's use `robot_state.yaw` converted to degrees if needed.
+            # But wait, `heading` from motors is Compass.
+            # Let's try to use the raw compass heading if possible? No, we only get `robot_state`.
+            # If `ryaw` is 0 at East (Math), and Bearing is 0 at North.
+            # Let's assume `ryaw` matches the controller expectation if we convert it properly.
+            # Controller `calculate_heading_nav` expects (0-360).
+            # Let's assume `ryaw` is in radians and convert to degrees.
+            # Better: recalculate bearing relative to robot frame?
 
-        # B) SAHAYI GEÇ (EKMEK KIRINTISI MODU)
-        elif self.current_state == self.STATE_TRAVERSE:
-            # Kayıt Al (Her 3 metrede bir)
-            last_pt = self.path_history[-1]
-            if haversine(rlat, rlon, last_pt[0], last_pt[1]) > 3.0:
-                self.path_history.append((rlat, rlon))
-                # print(f"[PATH] İz Bırakıldı: {len(self.path_history)}")
+            # Simple fix: Use `calculate_heading_nav` with converted yaw.
+            # If ryaw is standard math (0=East, CCW):
+            # Heading (0=North, CW) = 90 - MathDeg
 
-            # Hedef: Sahanın Sonu
-            target_gps = (wp.T2_ZONE_END_LAT, wp.T2_ZONE_END_LON)
-
-            # Sona yaklaştık mı?
-            if haversine(rlat, rlon, target_gps[0], target_gps[1]) < 4.0:
-                print("[TASK 2] Saha Sonu -> Yeşil Şamandıra Aranıyor")
-                self.current_state = self.STATE_SEARCH_GREEN
-
-            # A* Rota Hesabı (Harita merkezinden ileriye doğru)
-            # Hedefi robotun 10 metre ilerisine koy (Sanal Hedef)
-            target_x = rx + 10.0
-            target_y = 0.0  # Merkez hattı koru
-
-            # Haritada işaretli (Vision Memory) engellerden kaçarak yol bul
-            # Not: self.landmarks listesindeki engelleri nav_map üzerine
-            # siyah daire olarak çizmemiz lazım. (Main loop'ta mapping.py bunu yapacak)
-
-            path = self.planner.plan_path((rx, ry), (target_x, target_y), nav_map, map_info)
-            if path:
-            # A) A* YOL BULDU -> Sorun yok, yola devam et.
-                self.path_lost_time = None  # Tehlike geçti, sayacı sıfırla.
-                left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
-            
-            # NOT: Eğer Task 1 içindeysen ve 'Bitiş Kontrolü' kodların varsa
-            # 'return left, right' yapmadan önce o kontrolleri burada yapabilirsin
-            # veya return'ü en sona bırakabilirsin. Ama en temizi burdan dönmektir.
-            
-            else:
-                # B) A* YOL BULAMADI -> Merkezi Kurtarma Modunu Çağır
-                import time
-                if self.path_lost_time is None:
-                    self.path_lost_time = time.time()
-                    print(f"[{self.__class__.__name__}] YOL KAYIP! Failsafe Modu...")
-
-                # Controller'daki ortak zekayı (Bekle -> Dön -> Geri Git) çağır
-                left, right = self.controller.get_failsafe_command(self.path_lost_time)
-
-            # Eğer kodunun devamında 'Bitiş Kontrolü' (dist_to_exit vs.) varsa
-            # ve return'ü aşağıda yapıyorsan, yukarıdaki if/else içinde return yapma,
-            # değişkenleri (left, right) güncelle, akış aşağı devam etsin.
-            # AMA genelde return edip çıkmak daha güvenlidir.
-            
-            # Burada Bitiş Kontrolü (Exit Point) kodların varsa aynen kalsın:
-            # dist_to_exit = ...
-            # if dist_to_exit < 1.0: ...
-            
+            current_heading_deg = (90 - math.degrees(ryaw)) % 360
+            left, right = self.controller.calculate_heading_nav(current_heading_deg, target_bearing)
             return left, right
 
-        # C) YEŞİL ŞAMANDIRA ARA
-        elif self.current_state == self.STATE_SEARCH_GREEN:
-            # Hafızadaki en güvenilir Yeşil şamandırayı bul
-            best_green = None
-            min_dist = 999
+        # 2. GO TO CORNER (A* + Pure Pursuit + Breadcrumbs)
+        elif self.current_state == self.STATE_GO_TO_CORNER:
+            self._record_breadcrumb(rlat, rlon)
 
+            target_lat = wp.TASK2_CORNER_LAT
+            target_lon = wp.TASK2_CORNER_LON
+
+            dist = haversine(rlat, rlon, target_lat, target_lon)
+            if dist < 3.0:
+                print(f"[TASK 2] Reached Corner. Switching to {self.STATE_GO_TO_FINAL}")
+                self.current_state = self.STATE_GO_TO_FINAL
+                return 1500, 1500
+
+            # Calculate Target (x, y) relative to map
+            tx, ty = self._get_target_xy(rlat, rlon, rx, ry, target_lat, target_lon)
+
+            # Plan Path
+            path = self.planner.plan_path((rx, ry), (tx, ty), nav_map, map_info)
+
+            if path:
+                self.path_lost_time = None
+                left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
+                return left, right
+            else:
+                # Failsafe
+                if self.path_lost_time is None: self.path_lost_time = time.time()
+                return self.controller.get_failsafe_command(self.path_lost_time)
+
+        # 3. GO TO FINAL (A* + Pure Pursuit + Breadcrumbs)
+        elif self.current_state == self.STATE_GO_TO_FINAL:
+            self._record_breadcrumb(rlat, rlon)
+
+            target_lat = wp.TASK2_FINAL_LAT
+            target_lon = wp.TASK2_FINAL_LON
+
+            dist = haversine(rlat, rlon, target_lat, target_lon)
+            if dist < 3.0:
+                print(f"[TASK 2] Reached Final Position. Switching to {self.STATE_SEARCH_PATTERN}")
+                self.current_state = self.STATE_SEARCH_PATTERN
+                self.search_laps = 0
+                return 1500, 1500
+
+            tx, ty = self._get_target_xy(rlat, rlon, rx, ry, target_lat, target_lon)
+            path = self.planner.plan_path((rx, ry), (tx, ty), nav_map, map_info)
+
+            if path:
+                self.path_lost_time = None
+                left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
+                return left, right
+            else:
+                if self.path_lost_time is None: self.path_lost_time = time.time()
+                return self.controller.get_failsafe_command(self.path_lost_time)
+
+        # 4. SEARCH PATTERN
+        elif self.current_state == self.STATE_SEARCH_PATTERN:
+            # Check for Green Marker (Class ID 4)
             for lm in self.landmarks:
-                if lm['label'] == 'GREEN' and lm['conf'] > 3:  # En az 3 kere görülmüş olsun
-                    d = math.sqrt((lm['x'] - rx) ** 2 + (lm['y'] - ry) ** 2)
-                    if d < min_dist:
-                        min_dist = d
-                        best_green = lm
+                if lm.get('class_id') == 4 or lm.get('label') == 'GREEN':
+                    if lm['conf'] >= 1:
+                        print(f"[TASK 2] Green Marker Found! Switching to {self.STATE_GREEN_MARKER_FOUND}")
+                        self.target_buoy = lm
+                        self.current_state = self.STATE_GREEN_MARKER_FOUND
+                        self.marker_total_angle = 0.0
+                        self.marker_last_angle = None
+                        return 1500, 1500
 
-            if best_green and min_dist < 5.0:
-                print(f"[TASK 2] Yeşil Bulundu (ID: {best_green['id']}) -> Tur Atılıyor")
-                self.target_buoy = best_green
-                self.current_state = self.STATE_CIRCLE
-                self.circle_phase = 0
+            # Execute Circle Pattern around Final Pos
+            center_lat, center_lon = wp.TASK2_FINAL_LAT, wp.TASK2_FINAL_LON
+            cx, cy = self._get_target_xy(rlat, rlon, rx, ry, center_lat, center_lon)
 
-            # Bulana kadar yavaşça ilerle
-            return 1550, 1550
+            radius = 2.0
 
-        # D) TUR AT (KARE YÖRÜNGE)
-        elif self.current_state == self.STATE_CIRCLE:
-            if not self.target_buoy:
-                self.current_state = self.STATE_RETURN
+            # Angle of robot relative to center
+            dx = rx - cx
+            dy = ry - cy
+            current_angle = math.atan2(dy, dx)
+
+            # Move CCW
+            target_angle = current_angle + 0.3
+
+            tx = cx + radius * math.cos(target_angle)
+            ty = cy + radius * math.sin(target_angle)
+
+            # Count laps
+            if not hasattr(self, 'last_search_angle') or self.last_search_angle is None:
+                 self.last_search_angle = current_angle
+                 self.total_angle = 0.0
+
+            ang_diff = current_angle - self.last_search_angle
+            ang_diff = (ang_diff + math.pi) % (2*math.pi) - math.pi
+
+            # Filter noise / jumps
+            if abs(ang_diff) < 1.0:
+                self.total_angle += abs(ang_diff)
+
+            self.last_search_angle = current_angle
+
+            if self.total_angle >= 4 * math.pi: # 2 Full Laps
+                print("[TASK 2] Search Complete (Not Found). Returning Home.")
+                self.current_state = self.STATE_RETURN_HOME
                 return 1500, 1500
 
-            bx, by = self.target_buoy['x'], self.target_buoy['y']
-            R = 2.0  # Yarıçap (Metre)
-
-            # Kare Yörünge Noktaları (Sağdan Başla -> CCW)
-            offsets = [(0, -R), (R, 0), (0, R), (-R, 0)]  # Ön, Sağ, Arka, Sol
-
-            if self.circle_phase >= 4:
-                print("[TASK 2] Tur Tamamlandı -> Eve Dönüş")
-                self.current_state = self.STATE_RETURN
-                return 1500, 1500
-
-            # Hedef Nokta
-            ox, oy = offsets[self.circle_phase]
-            tx, ty = bx + ox, by + oy
-
-            # Noktaya git (A* kullanmadan direkt git çünkü şamandıra etrafındayız)
-            # Buraya basit bir "noktaya git" P kontrolcüsü lazım.
-            # Controller'daki pure pursuit mantığını tek nokta için kullanabiliriz.
+            # Pure pursuit to point
             path = [(tx, ty)]
             left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
-
-            # Noktaya ulaştık mı?
-            dist = math.sqrt((tx - rx) ** 2 + (ty - ry) ** 2)
-            if dist < 0.8:
-                self.circle_phase += 1
-                print(f"[TASK 2] Faz {self.circle_phase} tamam.")
-
             return left, right
 
-        # E) EVE DÖNÜŞ (RETROGRADE)
-        elif self.current_state == self.STATE_RETURN:
-            if not self.path_history:
-                print("[TASK 2] Geri Dönüş Bitti. Görev Tamamlandı.")
+        # 5. GREEN MARKER FOUND (Circle Object)
+        elif self.current_state == self.STATE_GREEN_MARKER_FOUND:
+            if not self.target_buoy:
+                self.current_state = self.STATE_RETURN_HOME
+                return 1500, 1500
+
+            cx, cy = self.target_buoy['x'], self.target_buoy['y']
+            radius = 2.0
+
+            dx = rx - cx
+            dy = ry - cy
+            current_angle = math.atan2(dy, dx)
+            target_angle = current_angle + 0.3
+
+            tx = cx + radius * math.cos(target_angle)
+            ty = cy + radius * math.sin(target_angle)
+
+            # Lap counting
+            if not hasattr(self, 'marker_last_angle') or self.marker_last_angle is None:
+                 self.marker_last_angle = current_angle
+                 self.marker_total_angle = 0.0
+
+            ang_diff = current_angle - self.marker_last_angle
+            ang_diff = (ang_diff + math.pi) % (2*math.pi) - math.pi
+
+            if abs(ang_diff) < 1.0:
+                self.marker_total_angle += abs(ang_diff)
+
+            self.marker_last_angle = current_angle
+
+            if self.marker_total_angle >= 4 * math.pi: # 2 Laps
+                 print("[TASK 2] Inspection Complete. Returning Home.")
+                 self.current_state = self.STATE_RETURN_HOME
+                 return 1500, 1500
+
+            path = [(tx, ty)]
+            left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
+            return left, right
+
+        # 6. RETURN HOME
+        elif self.current_state == self.STATE_RETURN_HOME:
+            if not self.breadcrumbs:
+                print("[TASK 2] Returned to Start. Task Complete.")
                 self.finished = True
                 return 1500, 1500
 
-            # Listenin sonundaki (en son geçtiğimiz) noktayı hedef al
-            target_lat, target_lon = self.path_history[-1]
+            target_lat, target_lon = self.breadcrumbs[-1]
             dist = haversine(rlat, rlon, target_lat, target_lon)
 
-            if dist < 2.5:
-                self.path_history.pop()  # Noktaya vardık, listeden sil
-                # print(f"[RETURN] Nokta geçildi. Kalan: {len(self.path_history)}")
+            if dist < 3.0:
+                self.breadcrumbs.pop()
+                return 1500, 1500
 
-            # O noktaya gitmek için GPS veya Pusula kullanabiliriz.
-            # Burada basitçe "O noktaya dön ve git" mantığı kurabiliriz.
-            # Ancak A* kullanmak daha güvenli olurdu. Şimdilik basit tutalım.
-            # (Burada controller.py içine basit GPS sürüşü eklenmeli veya main loop halletmeli)
+            tx, ty = self._get_target_xy(rlat, rlon, rx, ry, target_lat, target_lon)
+            path = self.planner.plan_path((rx, ry), (tx, ty), nav_map, map_info)
 
-            # Basit Yöntem: Pusula açısı hesapla ve dön
-            # (Bu kısım için main loop'taki GPS mantığına güveniyoruz veya buraya ekliyoruz)
-
-            return 1550, 1550  # Geçici hız (Yönlendirmeyi controller yapmalı)
+            if path:
+                left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
+                return left, right
+            else:
+                 if self.path_lost_time is None: self.path_lost_time = time.time()
+                 return self.controller.get_failsafe_command(self.path_lost_time)
 
         return 1500, 1500
 
-    def _update_landmark_memory(self, vision_objs, rx, ry):
-        """Kameradan gelen verilerle hafızayı günceller."""
-        MATCH_THRESH = 1.5  # Metre
+    def _get_target_xy(self, rlat, rlon, rx, ry, tlat, tlon):
+        dist = haversine(rlat, rlon, tlat, tlon)
+        bearing = calculate_bearing(rlat, rlon, tlat, tlon)
+        # Convert bearing (0=N, CW) to Math Angle (0=E, CCW) -> Math = 90 - Bearing
+        math_angle_rad = math.radians(90 - bearing)
+        tx = rx + dist * math.cos(math_angle_rad)
+        ty = ry + dist * math.sin(math_angle_rad)
+        return tx, ty
 
+    def _record_breadcrumb(self, rlat, rlon):
+        if not self.breadcrumbs:
+            self.breadcrumbs.append((rlat, rlon))
+            return
+
+        last_lat, last_lon = self.breadcrumbs[-1]
+        if haversine(rlat, rlon, last_lat, last_lon) >= 3.0:
+            self.breadcrumbs.append((rlat, rlon))
+            # print(f"[BREADCRUMB] Added. Total: {len(self.breadcrumbs)}")
+
+    def _update_landmark_memory(self, vision_objs, rx, ry):
+        """Updates internal memory with detected objects."""
+        MATCH_THRESH = 1.5
         for obj in vision_objs:
-            # Sadece belirli renkleri kaydet
-            if obj['label'] not in ['RED', 'GREEN', 'YELLOW']: continue
+            # We are interested in GREEN (class 4? or label 'GREEN')
+            # Prompt says "class_id = 4 (Green Marker)"
+            # Check object_detector.py to see if it gives class_id or label.
+            # Usually vision_objs has 'label', 'x', 'y'.
+            # If label is 'GREEN' or class_id is 4.
+            # Assuming 'label' is populated.
 
             ox, oy = obj['x'], obj['y']
-            found = False
+            label = obj.get('label', '')
 
+            # Simple matching
+            found = False
             for lm in self.landmarks:
                 dist = math.sqrt((lm['x'] - ox) ** 2 + (lm['y'] - oy) ** 2)
                 if dist < MATCH_THRESH:
-                    # Güncelle (Ortalamasını al - Stabilizasyon)
                     lm['x'] = (lm['x'] * 0.7) + (ox * 0.3)
                     lm['y'] = (lm['y'] * 0.7) + (oy * 0.3)
                     lm['conf'] += 1
@@ -254,7 +332,8 @@ class Task2Avoidance:
                 self.landmark_id_counter += 1
                 self.landmarks.append({
                     'id': self.landmark_id_counter,
-                    'label': obj['label'],
+                    'label': label,
+                    'class_id': obj.get('class_id', -1),
                     'x': ox,
                     'y': oy,
                     'conf': 1
