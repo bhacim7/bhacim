@@ -131,15 +131,18 @@ class Task1Channel:
             # Map Frame is ENU (East-North-Up). math.atan2(dy, dx) gives angle from East (CCW).
             angle_to_gate_rad = math.atan2(my - ry, mx - rx)
 
-            # Convert ENU Angle to Compass Bearing (0=N, CW)
-            # Compass = (90 - ENU_Deg) % 360
+            # VISUAL TARGET is in MAP Frame (ENU: 0=East, CCW).
+            # We need Compass Bearing (0=North, CW).
+            # Formula: (90 - ENU_Deg) % 360 is CORRECT for ENU->Compass.
             target_bearing = (90 - math.degrees(angle_to_gate_rad)) % 360
             # print(f"[TASK 1] Gate Detected! Override Bearing: {target_bearing:.1f}")
 
         # 4. Heading Controller
         # Robot Heading (Compass)
-        # Convert Robot Yaw (ENU, 0=East, CCW) to Compass (0=North, CW)
-        current_heading = (90 - math.degrees(ryaw)) % 360
+        # LOCALIZATION YAW is North-Referenced CCW (due to ZED/Compass fusion quirk).
+        # We need Compass Heading (North-Referenced CW).
+        # Formula: (-degrees) % 360.
+        current_heading = (-math.degrees(ryaw)) % 360
 
         left, right = self.controller.calculate_heading_nav(current_heading, target_bearing)
 
