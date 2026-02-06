@@ -81,7 +81,7 @@ class ObjectDetector:
             if dist_m and dist_m < cfg.LIDAR_MAX_DIST:
                 # Global Koordinat Hesabı
                 global_x, global_y = self._calculate_global_pos(
-                    dist_m, cx, frame.shape[1], robot_pose
+                    (x1, y1, x2, y2), depth_map, robot_pose
                 )
 
                 # Listeye Ekle
