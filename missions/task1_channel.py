@@ -1,3 +1,4 @@
+import math
 from config import cfg, wp
 from navigation.path_planner import PathPlanner
 from navigation.controller import RobotController
@@ -16,7 +17,7 @@ class Task1Channel:
         self.STATE_APPROACH = "APPROACH_ENTRY"  # Girişe git
         self.STATE_NAVIGATE = "NAVIGATE_CHANNEL"  # Kanalı geç
         self.path_lost_time = None
-        
+
         self.current_state = self.STATE_APPROACH
         self.finished = False
         self.next_task = "TASK2_APPROACH"
@@ -51,6 +52,7 @@ class Task1Channel:
         # Navigasyon Haritası (Main loop'tan gelmeli)
         nav_map = sensors.get('nav_map')
         map_info = sensors.get('map_info')  # {'center':..., 'res':..., 'size':...}
+        vision_objs = sensors.get('vision_objs', [])
 
         if rlat == 0.0 or rlon == 0.0:
             print("[TASK 1] GPS bekleniyor...")
@@ -81,16 +83,6 @@ class Task1Channel:
             # Bu yüzden APPROACH aşamasında basit GPS sürüşü (Controller üzerinden değil)
             # veya mapping sisteminin GPS->Metre dönüşümünü kullanmalıyız.
             # Şimdilik basitlik adına: Eğer harita merkezindeysek (0,0), hedefi ona göre ayarla.
-            # AMA DAHA İYİSİ: Planlayıcıyı sadece engeller varken kullanmak.
-
-            # BASİT YAKLAŞIM: GPS ile git, engel varsa LIDAR refleksi devreye girsin.
-            # controller.calculate_pure_pursuit yerine basit pusula sürüşü.
-            # (Şimdilik kod karışmasın diye burayı geçiyorum, main loop'ta GPS heading var)
-
-            # --- GEÇİCİ: Doğrudan Kanal Moduna Atla (Harita zaten sürekli çalışıyor) ---
-            # Eğer GPS ile hedef belirlemek istiyorsan localization sınıfına
-            # lat/lon -> x/y (metre) dönüşümü eklememiz gerekir.
-            # Şimdilik harita merkezine (0,0) göre hareket edeceğiz.
             pass
 
             # -----------------------------------------------------------
@@ -98,18 +90,44 @@ class Task1Channel:
         # -----------------------------------------------------------
 
         # Hedef: Çıkış Noktası (Metre cinsinden X,Y lazım)
-        # GPS farkından metre hesaplayarak hedefi buluyoruz (Flat Earth)
-        # 1 derece lat ~= 111132m, 1 derece lon ~= 111319m * cos(lat)
 
-        # Harita Merkezi (Robot ilk başladığı yer) referans alındığı için:
-        # Bu hesaplama biraz karmaşık olabilir, bu yüzden Task 1'de genellikle
-        # "Vision ile kapı ortala" mantığı kullanılır.
-        # Ancak biz A* kullanacağız. Haritada "ileri" (X+) yönünde gitmeye çalışalım.
+        # 1. VISUAL GATE DETECTION (Görsel Kapı Tespiti)
+        # Varsayılan: İleri git (Kanal ortası varsayımı)
+        target_x = rx + 10.0
+        target_y = 0.0
 
-        # HEDEF: Robotun önünde (veya harita koordinatlarında) 10 metre ilerisi
-        # Engel varsa A* etrafından dolanır.
-        target_x = rx + 10.0  # Haritada sürekli ileri gitmeye çalış
-        target_y = 0.0  # Merkeze sadık kalmaya çalış (Kanal ortası)
+        reds = [o for o in vision_objs if o['label'] == 'RED']
+        greens = [o for o in vision_objs if o['label'] == 'GREEN']
+
+        best_gate_dist = 999.0
+        found_gate = False
+
+        # En yakın Kırmızı-Yeşil çiftini bul
+        for r in reds:
+            for g in greens:
+                # Şamandıralar arası mesafe
+                d_buoys = math.sqrt((r['x'] - g['x'])**2 + (r['y'] - g['y'])**2)
+
+                # Makul kapı genişliği (örn: 2m ile 15m arası)
+                if 2.0 < d_buoys < 15.0:
+                    # Orta Nokta (Midpoint)
+                    mx = (r['x'] + g['x']) / 2.0
+                    my = (r['y'] + g['y']) / 2.0
+
+                    # Robota olan mesafe
+                    d_robot = math.sqrt((mx - rx)**2 + (my - ry)**2)
+
+                    if d_robot < best_gate_dist:
+                        best_gate_dist = d_robot
+                        # Hedefi kapının biraz ötesine koy (Vektörel)
+                        angle = math.atan2(my - ry, mx - rx)
+                        target_x = mx + 2.0 * math.cos(angle)
+                        target_y = my + 2.0 * math.sin(angle)
+                        found_gate = True
+
+        if found_gate:
+             # print(f"[TASK 1] Kapı Hedefi: ({target_x:.1f}, {target_y:.1f})")
+             pass
 
         # Eğer haritada engel varsa A* rota çizer
         path = self.planner.plan_path((rx, ry), (target_x, target_y), nav_map, map_info)
@@ -118,14 +136,14 @@ class Task1Channel:
         if path:
             # A) A* YOL BULDU -> Sorun yok, yola devam et.
             self.path_lost_time = None  # Tehlike geçti, sayacı sıfırla.
-            
+
             # Controller ile rotayı takip et
             left, right, _ = self.controller.calculate_pure_pursuit((rx, ry, ryaw), path)
-            
+
             # NOT: Eğer Task 1 içindeysen ve 'Bitiş Kontrolü' kodların varsa
             # 'return left, right' yapmadan önce o kontrolleri burada yapabilirsin
             # veya return'ü en sona bırakabilirsin. Ama en temizi burdan dönmektir.
-            
+
         else:
             # B) A* YOL BULAMADI -> Merkezi Kurtarma Modunu Çağır
             import time
@@ -140,7 +158,7 @@ class Task1Channel:
         # ve return'ü aşağıda yapıyorsan, yukarıdaki if/else içinde return yapma,
         # değişkenleri (left, right) güncelle, akış aşağı devam etsin.
         # AMA genelde return edip çıkmak daha güvenlidir.
-        
+
         # Burada Bitiş Kontrolü (Exit Point) kodların varsa aynen kalsın:
         # Bitiş Kontrolü
         dist_to_exit = haversine(rlat, rlon, self.exit_pt[0], self.exit_pt[1])
@@ -150,9 +168,9 @@ class Task1Channel:
             print("[TASK 1] Çıkış kapısına ulaşıldı.")
             self.finished = True
             return 1500, 1500
-        
+
         return left, right
-        
+
 
     def is_finished(self):
         return self.finished
