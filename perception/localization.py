@@ -90,7 +90,13 @@ class LocalizationManager:
             # Quaternion -> Yaw hesaplama
             siny_cosp = 2 * (o[3] * o[2] + o[0] * o[1])
             cosy_cosp = 1 - 2 * (o[1] * o[1] + o[2] * o[2])
-            self.yaw = math.atan2(siny_cosp, cosy_cosp)
+            raw_yaw = math.atan2(siny_cosp, cosy_cosp)
+
+            # Map-Aligned ZED Yaw (Forward=0)
+            # ZED Frame: Yaw=0 at Right, Yaw=90 at Forward.
+            # Map Frame: Yaw=0 at Forward.
+            # So Map = ZED - 90 deg (pi/2)
+            self.yaw = raw_yaw - (math.pi / 2)
 
         # 2. Heading (Pusula) Filtreleme
         if mav_heading is not None:
@@ -102,28 +108,47 @@ class LocalizationManager:
             # [SENIOR UPDATE] SENSOR FUSION (ZED + COMPASS)
             # ZED Yaw (Kısa vadeli stabil) ile Pusula (Uzun vadeli doğru) birleştirilir.
             if zed_pose is not None:
-                compass_rad = math.radians(self.heading)
+                # Compass (CW from North) -> Map ENU (CCW from East)
+                # Map 0 = East, 90 = North.
+                # Compass 0 = North -> Map 90.
+                # Compass 90 = East -> Map 0.
+                compass_enu_deg = (90 - self.heading) % 360
+                compass_enu_rad = math.radians(compass_enu_deg)
 
                 # İlk hizalama (Offset belirle)
                 if self.yaw_offset is None:
-                    self.yaw_offset = compass_rad - self.yaw
-
-                # ZED verisini Kuzey'e hizala
-                aligned_zed_yaw = self.yaw + self.yaw_offset
+                    self.yaw_offset = compass_enu_rad - self.yaw
 
                 # Complementary Filter: %98 ZED, %2 Pusula
                 # Amaç: ZED'in driftini pusula ile yavaşça düzeltmek.
-                diff = compass_rad - aligned_zed_yaw
+                aligned_zed_yaw = self.yaw + self.yaw_offset
+
+                diff = compass_enu_rad - aligned_zed_yaw
                 diff = (diff + math.pi) % (2 * math.pi) - math.pi # Normalize (-PI, PI)
 
                 # Offseti güncelle (Öğrenme Modu)
                 # Hatayı zamanla offset'e yedirerek kalıcı düzeltme sağla.
                 self.yaw_offset += 0.02 * diff
 
-                # Final Yaw (Fused)
-                self.yaw = self.yaw + self.yaw_offset
+        # 3. Apply Offset and Coordinate Rotation (Local -> Global ENU)
+        if self.yaw_offset is not None and zed_pose is not None:
+            # Apply offset to Yaw
+            self.yaw = self.yaw + self.yaw_offset
 
-        # 3. GPS Güncelleme
+            # Rotate Position (ZED Frame -> Global ENU)
+            # self.x, self.y are currently in ZED-Map aligned frame (X=Forward).
+            # yaw_offset is rotation from ZED-Map to Global ENU.
+
+            raw_x = self.x
+            raw_y = self.y
+
+            cos_off = math.cos(self.yaw_offset)
+            sin_off = math.sin(self.yaw_offset)
+
+            self.x = raw_x * cos_off - raw_y * sin_off
+            self.y = raw_x * sin_off + raw_y * cos_off
+
+        # 4. GPS Güncelleme
         if gps_data and gps_data[0] is not None:
             self.lat = gps_data[0]
             self.lon = gps_data[1]
